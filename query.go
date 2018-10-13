@@ -5,10 +5,17 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	alpm "github.com/jguer/go-alpm"
 	rpc "github.com/mikkeloscar/aur"
 )
+
+type aurWarnings struct {
+	Orphans   []string
+	OutOfDate []string
+	Missing   []string
+}
 
 // Query is a collection of Results
 type aurQuery []rpc.Pkg
@@ -21,10 +28,32 @@ func (q aurQuery) Len() int {
 }
 
 func (q aurQuery) Less(i, j int) bool {
-	if config.SortMode == BottomUp {
-		return q[i].NumVotes < q[j].NumVotes
+	var result bool
+
+	switch config.SortBy {
+	case "votes":
+		result = q[i].NumVotes > q[j].NumVotes
+	case "popularity":
+		result = q[i].Popularity > q[j].Popularity
+	case "name":
+		result = lessRunes([]rune(q[i].Name), []rune(q[j].Name))
+	case "base":
+		result = lessRunes([]rune(q[i].PackageBase), []rune(q[j].PackageBase))
+	case "submitted":
+		result = q[i].FirstSubmitted < q[j].FirstSubmitted
+	case "modified":
+		result = q[i].LastModified < q[j].LastModified
+	case "id":
+		result = q[i].ID < q[j].ID
+	case "baseid":
+		result = q[i].PackageBaseID < q[j].PackageBaseID
 	}
-	return q[i].NumVotes > q[j].NumVotes
+
+	if config.SortMode == BottomUp {
+		return !result
+	}
+
+	return result
 }
 
 func (q aurQuery) Swap(i, j int) {
@@ -130,23 +159,41 @@ func narrowSearch(pkgS []string, sortS bool) (aurQuery, error) {
 
 // SyncSearch presents a query to the local repos and to the AUR.
 func syncSearch(pkgS []string) (err error) {
-	aq, aurErr := narrowSearch(pkgS, true)
-	pq, _, err := queryRepo(pkgS)
-	if err != nil {
-		return err
+	pkgS = removeInvalidTargets(pkgS)
+	var aurErr error
+	var repoErr error
+	var aq aurQuery
+	var pq repoQuery
+
+	if mode == ModeAUR || mode == ModeAny {
+		aq, aurErr = narrowSearch(pkgS, true)
+	}
+	if mode == ModeRepo || mode == ModeAny {
+		pq, repoErr = queryRepo(pkgS)
+		if repoErr != nil {
+			return err
+		}
 	}
 
 	if config.SortMode == BottomUp {
-		aq.printSearch(1)
-		pq.printSearch()
+		if mode == ModeAUR || mode == ModeAny {
+			aq.printSearch(1)
+		}
+		if mode == ModeRepo || mode == ModeAny {
+			pq.printSearch()
+		}
 	} else {
-		pq.printSearch()
-		aq.printSearch(1)
+		if mode == ModeRepo || mode == ModeAny {
+			pq.printSearch()
+		}
+		if mode == ModeAUR || mode == ModeAny {
+			aq.printSearch(1)
+		}
 	}
 
 	if aurErr != nil {
 		fmt.Printf("Error during AUR search: %s\n", aurErr)
-		fmt.Println("Showing Repo packags only")
+		fmt.Println("Showing Repo packages only")
 	}
 
 	return nil
@@ -155,6 +202,8 @@ func syncSearch(pkgS []string) (err error) {
 // SyncInfo serves as a pacman -Si for repo packages and AUR packages.
 func syncInfo(pkgS []string) (err error) {
 	var info []*rpc.Pkg
+	missing := false
+	pkgS = removeInvalidTargets(pkgS)
 	aurS, repoS, err := packageSlices(pkgS)
 	if err != nil {
 		return
@@ -168,8 +217,9 @@ func syncInfo(pkgS []string) (err error) {
 			noDb = append(noDb, name)
 		}
 
-		info, err = aurInfo(noDb)
+		info, err = aurInfoPrint(noDb)
 		if err != nil {
+			missing = true
 			fmt.Println(err)
 		}
 	}
@@ -177,70 +227,56 @@ func syncInfo(pkgS []string) (err error) {
 	// Repo always goes first
 	if len(repoS) != 0 {
 		arguments := cmdArgs.copy()
-		arguments.delTarget(aurS...)
-		err = passToPacman(arguments)
+		arguments.clearTargets()
+		arguments.addTarget(repoS...)
+		err = show(passToPacman(arguments))
 
 		if err != nil {
 			return
 		}
 	}
 
-	if len(aurS) != 0 {
+	if len(aurS) != len(info) {
+		missing = true
+	}
+
+	if len(info) != 0 {
 		for _, pkg := range info {
 			PrintInfo(pkg)
 		}
+	}
+
+	if missing {
+		err = fmt.Errorf("")
 	}
 
 	return
 }
 
 // Search handles repo searches. Creates a RepoSearch struct.
-func queryRepo(pkgInputN []string) (s repoQuery, n int, err error) {
+func queryRepo(pkgInputN []string) (s repoQuery, err error) {
 	dbList, err := alpmHandle.SyncDbs()
 	if err != nil {
 		return
 	}
 
-	// BottomUp functions
-	initL := func(len int) int {
-		if config.SortMode == TopDown {
-			return 0
+	dbList.ForEach(func(db alpm.Db) error {
+		if len(pkgInputN) == 0 {
+			pkgs := db.PkgCache()
+			s = append(s, pkgs.Slice()...)
+		} else {
+			pkgs := db.Search(pkgInputN)
+			s = append(s, pkgs.Slice()...)
 		}
-		return len - 1
-	}
-	compL := func(len int, i int) bool {
-		if config.SortMode == TopDown {
-			return i < len
+		return nil
+	})
+
+	if config.SortMode == BottomUp {
+		for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
+			s[i], s[j] = s[j], s[i]
 		}
-		return i > -1
-	}
-	finalL := func(i int) int {
-		if config.SortMode == TopDown {
-			return i + 1
-		}
-		return i - 1
 	}
 
-	dbS := dbList.Slice()
-	lenDbs := len(dbS)
-	for f := initL(lenDbs); compL(lenDbs, f); f = finalL(f) {
-		pkgS := dbS[f].PkgCache().Slice()
-		lenPkgs := len(pkgS)
-		for i := initL(lenPkgs); compL(lenPkgs, i); i = finalL(i) {
-			match := true
-			for _, pkgN := range pkgInputN {
-				if !(strings.Contains(pkgS[i].Name(), pkgN) || strings.Contains(strings.ToLower(pkgS[i].Description()), pkgN)) {
-					match = false
-					break
-				}
-			}
-
-			if match {
-				n++
-				s = append(s, pkgS[i])
-			}
-		}
-	}
 	return
 }
 
@@ -255,10 +291,10 @@ func packageSlices(toCheck []string) (aur []string, repo []string, err error) {
 		db, name := splitDbFromName(_pkg)
 		found := false
 
-		if db == "aur" {
+		if db == "aur" || mode == ModeAUR {
 			aur = append(aur, _pkg)
 			continue
-		} else if db != "" {
+		} else if db != "" || mode == ModeRepo {
 			repo = append(repo, _pkg)
 			continue
 		}
@@ -291,27 +327,110 @@ func packageSlices(toCheck []string) (aur []string, repo []string, err error) {
 
 // HangingPackages returns a list of packages installed as deps
 // and unneeded by the system
-func hangingPackages() (hanging []string, err error) {
+// removeOptional decides whether optional dependencies are counted or not
+func hangingPackages(removeOptional bool) (hanging []string, err error) {
 	localDb, err := alpmHandle.LocalDb()
 	if err != nil {
 		return
 	}
 
-	f := func(pkg alpm.Package) error {
-		if pkg.Reason() != alpm.PkgReasonDepend {
+	// safePackages represents every package in the system in one of 3 states
+	// State = 0 - Remove package from the system
+	// State = 1 - Keep package in the system; need to iterate over dependencies
+	// State = 2 - Keep package and have iterated over dependencies
+	safePackages := make(map[string]uint8)
+	// provides stores a mapping from the provides name back to the original package name
+	provides := make(mapStringSet)
+	packages := localDb.PkgCache()
+
+	// Mark explicit dependencies and enumerate the provides list
+	setupResources := func(pkg alpm.Package) error {
+		if pkg.Reason() == alpm.PkgReasonExplicit {
+			safePackages[pkg.Name()] = 1
+		} else {
+			safePackages[pkg.Name()] = 0
+		}
+
+		pkg.Provides().ForEach(func(dep alpm.Depend) error {
+			provides.Add(dep.Name, pkg.Name())
+			return nil
+		})
+		return nil
+	}
+	packages.ForEach(setupResources)
+
+	iterateAgain := true
+	processDependencies := func(pkg alpm.Package) error {
+		if state := safePackages[pkg.Name()]; state == 0 || state == 2 {
 			return nil
 		}
-		requiredby := pkg.ComputeRequiredBy()
-		if len(requiredby) == 0 {
-			hanging = append(hanging, pkg.Name())
-			fmt.Println(pkg.Name() + ": " + magenta(human(pkg.ISize())))
 
+		safePackages[pkg.Name()] = 2
+
+		// Update state for dependencies
+		markDependencies := func(dep alpm.Depend) error {
+			// Don't assume a dependency is installed
+			state, ok := safePackages[dep.Name]
+			if !ok {
+				// Check if dep is a provides rather than actual package name
+				if pset, ok2 := provides[dep.Name]; ok2 {
+					for p := range pset {
+						if safePackages[p] == 0 {
+							iterateAgain = true
+							safePackages[p] = 1
+						}
+					}
+				}
+
+				return nil
+			}
+
+			if state == 0 {
+				iterateAgain = true
+				safePackages[dep.Name] = 1
+			}
+			return nil
+		}
+
+		pkg.Depends().ForEach(markDependencies)
+		if !removeOptional {
+			pkg.OptionalDepends().ForEach(markDependencies)
 		}
 		return nil
 	}
 
-	err = localDb.PkgCache().ForEach(f)
+	for iterateAgain {
+		iterateAgain = false
+		packages.ForEach(processDependencies)
+	}
+
+	// Build list of packages to be removed
+	packages.ForEach(func(pkg alpm.Package) error {
+		if safePackages[pkg.Name()] == 0 {
+			hanging = append(hanging, pkg.Name())
+		}
+		return nil
+	})
+
 	return
+}
+
+func lastBuildTime() (time.Time, error) {
+	var time time.Time
+
+	pkgs, _, _, _, err := filterPackages()
+	if err != nil {
+		return time, err
+	}
+
+	for _, pkg := range pkgs {
+		thisTime := pkg.BuildDate()
+		if thisTime.After(time) {
+			time = thisTime
+		}
+	}
+
+	return time, nil
 }
 
 // Statistics returns statistics about packages installed in system
@@ -353,25 +472,18 @@ func statistics() (info struct {
 // of packages exceeds the number set in config.RequestSplitN.
 // If the number does exceed config.RequestSplitN multiple rpc requests will be
 // performed concurrently.
-func aurInfo(names []string) ([]*rpc.Pkg, error) {
+func aurInfo(names []string, warnings *aurWarnings) ([]*rpc.Pkg, error) {
 	info := make([]*rpc.Pkg, 0, len(names))
 	seen := make(map[string]int)
 	var mux sync.Mutex
 	var wg sync.WaitGroup
-	var err error
-
-	missing := make([]string, 0, len(names))
-	orphans := make([]string, 0, len(names))
-	outOfDate := make([]string, 0, len(names))
+	var errs MultiError
 
 	makeRequest := func(n, max int) {
 		defer wg.Done()
 		tempInfo, requestErr := rpc.Info(names[n:max])
-		if err != nil {
-			return
-		}
+		errs.Add(requestErr)
 		if requestErr != nil {
-			err = requestErr
 			return
 		}
 		mux.Lock()
@@ -390,7 +502,7 @@ func aurInfo(names []string) ([]*rpc.Pkg, error) {
 
 	wg.Wait()
 
-	if err != nil {
+	if err := errs.Return(); err != nil {
 		return info, err
 	}
 
@@ -401,43 +513,33 @@ func aurInfo(names []string) ([]*rpc.Pkg, error) {
 	for _, name := range names {
 		i, ok := seen[name]
 		if !ok {
-			missing = append(missing, name)
+			warnings.Missing = append(warnings.Missing, name)
 			continue
 		}
 
 		pkg := info[i]
 
 		if pkg.Maintainer == "" {
-			orphans = append(orphans, name)
+			warnings.Orphans = append(warnings.Orphans, name)
 		}
 		if pkg.OutOfDate != 0 {
-			outOfDate = append(outOfDate, name)
+			warnings.OutOfDate = append(warnings.OutOfDate, name)
 		}
 	}
 
-	if len(missing) > 0 {
-		fmt.Print(bold(red(arrow + " Missing AUR Packages:")))
-		for _, name := range missing {
-			fmt.Print(" " + bold(magenta(name)))
-		}
-		fmt.Println()
+	return info, nil
+}
+
+func aurInfoPrint(names []string) ([]*rpc.Pkg, error) {
+	fmt.Println(bold(cyan("::") + bold(" Querying AUR...")))
+
+	warnings := &aurWarnings{}
+	info, err := aurInfo(names, warnings)
+	if err != nil {
+		return info, err
 	}
 
-	if len(orphans) > 0 {
-		fmt.Print(bold(red(arrow + " Orphaned AUR Packages:")))
-		for _, name := range orphans {
-			fmt.Print(" " + bold(magenta(name)))
-		}
-		fmt.Println()
-	}
-
-	if len(outOfDate) > 0 {
-		fmt.Print(bold(red(arrow + " Out Of Date AUR Packages:")))
-		for _, name := range outOfDate {
-			fmt.Print(" " + bold(magenta(name)))
-		}
-		fmt.Println()
-	}
+	warnings.print()
 
 	return info, nil
 }

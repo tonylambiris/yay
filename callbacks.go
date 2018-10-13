@@ -3,84 +3,99 @@ package main
 import (
 	"bufio"
 	"fmt"
-	alpm "github.com/jguer/go-alpm"
 	"os"
 	"strconv"
+
+	alpm "github.com/jguer/go-alpm"
 )
 
 func questionCallback(question alpm.QuestionAny) {
-	qi, err := question.QuestionInstallIgnorepkg()
-	if err == nil {
+	if qi, err := question.QuestionInstallIgnorepkg(); err == nil {
 		qi.SetInstall(true)
 	}
 
 	qp, err := question.QuestionSelectProvider()
-	if err == nil {
-		size := 0
+	if err != nil {
+		return
+	}
 
-		qp.Providers(alpmHandle).ForEach(func(pkg alpm.Package) error {
-			size++
-			return nil
-		})
+	if hideMenus {
+		return
+	}
 
-		fmt.Print(bold(cyan(":: ")))
-		str := bold(fmt.Sprintf(bold("There are %d providers avalable for %s:"), size, qp.Dep()))
+	size := 0
 
-		size = 1
-		var db string
+	qp.Providers(alpmHandle).ForEach(func(pkg alpm.Package) error {
+		size++
+		return nil
+	})
 
-		qp.Providers(alpmHandle).ForEach(func(pkg alpm.Package) error {
-			thisDb := pkg.DB().Name()
+	fmt.Print(bold(cyan(":: ")))
+	str := bold(fmt.Sprintf(bold("There are %d providers available for %s:"), size, qp.Dep()))
 
-			if db != thisDb {
-				db = thisDb
-				str += bold(cyan("\n:: ")) + bold("Repository "+db+"\n\t")
-			}
-			str += fmt.Sprintf("%d) %s ", size, pkg.Name())
-			size++
-			return nil
-		})
+	size = 1
+	var db string
 
-		fmt.Println(str)
+	qp.Providers(alpmHandle).ForEach(func(pkg alpm.Package) error {
+		thisDb := pkg.DB().Name()
 
-		for {
-			fmt.Print("\nEnter a number (default=1): ")
+		if db != thisDb {
+			db = thisDb
+			str += bold(cyan("\n:: ")) + bold("Repository "+db+"\n    ")
+		}
+		str += fmt.Sprintf("%d) %s ", size, pkg.Name())
+		size++
+		return nil
+	})
 
-			if config.NoConfirm {
-				fmt.Println()
-				break
-			}
+	fmt.Println(str)
 
-			reader := bufio.NewReader(os.Stdin)
-			numberBuf, overflow, err := reader.ReadLine()
+	for {
+		fmt.Print("\nEnter a number (default=1): ")
 
-			if err != nil {
-				fmt.Println(err)
-				break
-			}
-
-			if overflow {
-				fmt.Println("Input too long")
-				continue
-			}
-
-			if string(numberBuf) == "" {
-				break
-			}
-
-			num, err := strconv.Atoi(string(numberBuf))
-			if err != nil {
-				fmt.Printf("%s invalid number: %s\n", red("error:"), string(numberBuf))
-				continue
-			}
-
-			if num < 1 || num > size {
-				fmt.Printf("%s invalid value: %d is not between %d and %d\n", red("error:"), num, 1, size)
-				continue
-			}
-
-			qp.SetUseIndex(num - 1)
+		if config.NoConfirm {
+			fmt.Println()
 			break
 		}
+
+		reader := bufio.NewReader(os.Stdin)
+		numberBuf, overflow, err := reader.ReadLine()
+
+		if err != nil {
+			fmt.Println(err)
+			break
+		}
+
+		if overflow {
+			fmt.Println("Input too long")
+			continue
+		}
+
+		if string(numberBuf) == "" {
+			break
+		}
+
+		num, err := strconv.Atoi(string(numberBuf))
+		if err != nil {
+			fmt.Printf("%s invalid number: %s\n", red("error:"), string(numberBuf))
+			continue
+		}
+
+		if num < 1 || num > size {
+			fmt.Printf("%s invalid value: %d is not between %d and %d\n", red("error:"), num, 1, size)
+			continue
+		}
+
+		qp.SetUseIndex(num - 1)
+		break
+	}
+}
+
+func logCallback(level alpm.LogLevel, str string) {
+	switch level {
+	case alpm.LogWarning:
+		fmt.Print(bold(yellow(smallArrow)), " ", str)
+	case alpm.LogError:
+		fmt.Print(bold(red(smallArrow)), " ", str)
 	}
 }

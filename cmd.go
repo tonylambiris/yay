@@ -2,19 +2,17 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
-	"strconv"
-	"strings"
-	"time"
+
+	alpm "github.com/jguer/go-alpm"
 )
 
 var cmdArgs = makeArguments()
 
 func usage() {
 	fmt.Println(`Usage:
+    yay
     yay <operation> [...]
     yay <package(s)>
 
@@ -31,101 +29,106 @@ operations:
 
 New operations:
     yay {-Y --yay}         [options] [package(s)]
-    yay {-P --print}       [options]
+    yay {-P --show}        [options]
     yay {-G --getpkgbuild} [package(s)]
 
+New options:
+       --repo             Assume targets are from the repositories
+    -a --aur              Assume targets are from the AUR
+
 Permanent configuration options:
-    --save               Causes the following options to be saved back to the
-                         config file when used
+    --save                Causes the following options to be saved back to the
+                          config file when used
 
-    --builddir <dir>     Directory to use for building AUR Packages
-    --editor   <file>    Editor to use when editing PKGBUILDs
-    --makepkg  <file>    makepkg command to use
-    --pacman   <file>    pacman command to use
-    --tar      <file>    bsdtar command to use
-    --git      <file>    git command to use
-    --gpg      <file>    gpg command to use
-    --config   <file>    pacman.conf file to use
+    --aururl      <url>   Set an alternative AUR URL
+    --builddir    <dir>   Directory used to download and run PKBUILDS
+    --editor      <file>  Editor to use when editing PKGBUILDs
+    --editorflags <flags> Pass arguments to editor
+    --makepkg     <file>  makepkg command to use
+    --mflags      <flags> Pass arguments to makepkg
+    --pacman      <file>  pacman command to use
+    --tar         <file>  bsdtar command to use
+    --git         <file>  git command to use
+    --gitflags    <flags> Pass arguments to git
+    --gpg         <file>  gpg command to use
+    --gpgflags    <flags> Pass arguments to gpg
+    --config      <file>  pacman.conf file to use
+    --makepkgconf <file>  makepkg.conf file to use
+    --nomakepkgconf       Use the default makepkg.conf
 
-    --requestsplitn <n>  Max amount of packages to query per AUR request
+    --requestsplitn <n>   Max amount of packages to query per AUR request
+    --completioninterval  <n> Time in days to to refresh completion cache
+    --sortby    <field>   Sort AUR results by a specific field during search
+    --answerclean   <a>   Set a predetermined answer for the clean build menu
+    --answerdiff    <a>   Set a predetermined answer for the diff menu
+    --answeredit    <a>   Set a predetermined answer for the edit pkgbuild menu
+    --answerupgrade <a>   Set a predetermined answer for the upgrade menu
+    --noanswerclean       Unset the answer for the clean build menu
+    --noanswerdiff        Unset the answer for the edit diff menu
+    --noansweredit        Unset the answer for the edit pkgbuild menu
+    --noanswerupgrade     Unset the answer for the upgrade menu
+    --cleanmenu           Give the option to clean build PKGBUILDS
+    --diffmenu            Give the option to show diffs for build files
+    --editmenu            Give the option to edit/view PKGBUILDS
+    --upgrademenu         Show a detailed list of updates with the option to skip any
+    --nocleanmenu         Don't clean build PKGBUILDS
+    --nodiffmenu          Don't show diffs for build files
+    --noeditmenu          Don't edit/view PKGBUILDS
+    --noupgrademenu       Don't show the upgrade menu
+    --askremovemake       Ask to remove makedepends after install
+    --removemake          Remove makedepends after install
+    --noremovemake        Don't remove makedepends after install
 
-    --topdown            Shows repository's packages first and then AUR's
-    --bottomup           Shows AUR's packages first and then repository's
-    --devel              Check development packages during sysupgrade
-    --nodevel            Do not check development packages
-    --afterclean         Remove package sources after successful install
-    --noafterclean       Do not remove package sources after successful build
-    --timeupdate         Check package's AUR page for changes during sysupgrade
-    --notimeupdate       Do not checking of AUR page changes
-    --redownload         Always download pkgbuilds of targets
-    --redownloadall      Always download pkgbuilds of all AUR packages
-    --noredownload       Skip pkgbuild download if in cache and up to date
-    --rebuild            Always build target packages
-    --rebuildall         Always build all AUR packages
-    --rebuildtree        Always build all AUR packages even if installed
-    --norebuild          Skip package build if in cache and up to date
-    --mflags <flags>     Pass arguments to makepkg
-    --gpgflags <flags>   Pass arguments to gpg
-    --sudoloop           Loop sudo calls in the background to avoid timeout
-    --nosudoloop         Do not loop sudo calls in the background
+    --cleanafter          Remove package sources after successful install
+    --nocleanafter        Do not remove package sources after successful build
+    --bottomup            Shows AUR's packages first and then repository's
+    --topdown             Shows repository's packages first and then AUR's
 
-Print specific options:
-    -c --complete        Used for completions
-    -d --defaultconfig   Print default yay configuration
-    -g --config          Print current yay configuration
-    -n --numberupgrades  Print number of updates
-    -s --stats           Display system package statistics
-    -u --upgrades        Print update list
+    --devel               Check development packages during sysupgrade
+    --nodevel             Do not check development packages
+    --gitclone            Use git clone for PKGBUILD retrieval
+    --nogitclone          Never use git clone for PKGBUILD retrieval
+    --rebuild             Always build target packages
+    --rebuildall          Always build all AUR packages
+    --norebuild           Skip package build if in cache and up to date
+    --rebuildtree         Always build all AUR packages even if installed
+    --redownload          Always download pkgbuilds of targets
+    --noredownload        Skip pkgbuild download if in cache and up to date
+    --redownloadall       Always download pkgbuilds of all AUR packages
+    --provides            Look for matching provders when searching for packages
+    --noprovides          Just look for packages by pkgname
+    --pgpfetch            Prompt to import PGP keys from PKGBUILDs
+    --nopgpfetch          Don't prompt to import PGP keys
+    --useask              Automatically resolve conflicts using pacman's ask flag
+    --nouseask            Confirm conflicts manually during the install
+    --combinedupgrade     Refresh then perform the repo and AUR upgrade together
+    --nocombinedupgrade   Perform the repo upgrade and AUR upgrade separately
 
-Yay specific options:
-    -c --clean           Remove unneeded dependencies
-       --gendb           Generates development package DB used for updating
+    --sudoloop            Loop sudo calls in the background to avoid timeout
+    --nosudoloop          Do not loop sudo calls in the background
 
+    --timeupdate          Check packages' AUR page for changes during sysupgrade
+    --notimeupdate        Do not check packages' AUR page for changes
+
+show specific options:
+    -c --complete         Used for completions
+    -d --defaultconfig    Print default yay configuration
+    -g --currentconfig    Print current yay configuration
+    -s --stats            Display system package statistics
+    -w --news             Print arch news
+
+yay specific options:
+    -c --clean            Remove unneeded dependencies
+       --gendb            Generates development package DB used for updating
+
+getpkgbuild specific options:
+    -f --force            Force download for existing tar packages
+
+If no arguments are provided 'yay -Syu' will be performed
 If no operation is provided -Y will be assumed`)
 }
 
-func sudoLoopBackground() {
-	updateSudo()
-	go sudoLoop()
-}
-
-func sudoLoop() {
-	for {
-		updateSudo()
-		time.Sleep(298 * time.Second)
-	}
-}
-
-func updateSudo() {
-	for {
-		cmd := exec.Command("sudo", "-v")
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-		err := cmd.Run()
-		if err != nil {
-			fmt.Println(err)
-		} else {
-			break
-		}
-	}
-}
-
 func handleCmd() (err error) {
-	for option, value := range cmdArgs.options {
-		if handleConfig(option, value) {
-			cmdArgs.delArg(option)
-		}
-	}
-
-	for option, value := range cmdArgs.globals {
-		if handleConfig(option, value) {
-			cmdArgs.delArg(option)
-		}
-	}
-
-	if shouldSaveConfig {
-		config.saveConfig()
-	}
-	
 	if cmdArgs.existsArg("h", "help") {
 		err = handleHelp()
 		return
@@ -139,9 +142,9 @@ func handleCmd() (err error) {
 	case "V", "version":
 		handleVersion()
 	case "D", "database":
-		err = passToPacman(cmdArgs)
+		err = show(passToPacman(cmdArgs))
 	case "F", "files":
-		err = passToPacman(cmdArgs)
+		err = show(passToPacman(cmdArgs))
 	case "Q", "query":
 		err = handleQuery()
 	case "R", "remove":
@@ -149,12 +152,12 @@ func handleCmd() (err error) {
 	case "S", "sync":
 		err = handleSync()
 	case "T", "deptest":
-		err = passToPacman(cmdArgs)
+		err = show(passToPacman(cmdArgs))
 	case "U", "upgrade":
-		err = passToPacman(cmdArgs)
+		err = show(passToPacman(cmdArgs))
 	case "G", "getpkgbuild":
 		err = handleGetpkgbuild()
-	case "P", "print":
+	case "P", "show":
 		err = handlePrint()
 	case "Y", "--yay":
 		err = handleYay()
@@ -168,178 +171,79 @@ func handleCmd() (err error) {
 }
 
 func handleQuery() error {
-	var err error
-
 	if cmdArgs.existsArg("u", "upgrades") {
-		err = printUpdateList(cmdArgs)
-	} else {
-		err = passToPacman(cmdArgs)
+		return printUpdateList(cmdArgs)
 	}
-
-	return err
+	return show(passToPacman(cmdArgs))
 }
 
 func handleHelp() error {
 	if cmdArgs.op == "Y" || cmdArgs.op == "yay" {
 		usage()
 		return nil
-	} else {
-		return passToPacman(cmdArgs)
 	}
-}
-
-//this function should only set config options
-//but currently still uses the switch left over from old code
-//eventually this should be refactored out futher
-//my current plan is to have yay specific operations in its own operator
-//e.g. yay -Y --gendb
-//e.g yay -Yg
-func handleConfig(option, value string) bool {
-	switch option {
-	case "save":
-		shouldSaveConfig = true
-	case "afterclean":
-		config.CleanAfter = true
-	case "noafterclean":
-		config.CleanAfter = false
-	case "devel":
-		config.Devel = true
-	case "nodevel":
-		config.Devel = false
-	case "timeupdate":
-		config.TimeUpdate = true
-	case "notimeupdate":
-		config.TimeUpdate = false
-	case "topdown":
-		config.SortMode = TopDown
-	case "bottomup":
-		config.SortMode = BottomUp
-	case "noconfirm":
-		config.NoConfirm = true
-	case "redownload":
-		config.ReDownload = "yes"
-	case "redownloadall":
-		config.ReDownload = "all"
-	case "noredownload":
-		config.ReDownload = "no"
-	case "rebuild":
-		config.ReBuild = "yes"
-	case "rebuildall":
-		config.ReBuild = "all"
-	case "rebuildtree":
-		config.ReBuild = "tree"
-	case "norebuild":
-		config.ReBuild = "no"
-	case "gpgflags":
-		config.GpgFlags = value
-	case "mflags":
-		config.MFlags = value
-	case "builddir":
-		config.BuildDir = value
-	case "editor":
-		config.Editor = value
-	case "makepkg":
-		config.MakepkgBin = value
-	case "pacman":
-		config.PacmanBin = value
-	case "tar":
-		config.TarBin = value
-	case "git":
-		config.GitBin = value
-	case "gpg":
-		config.GpgBin = value
-	case "requestsplitn":
-		n, err := strconv.Atoi(value)
-		if err == nil && n > 0 {
-			config.RequestSplitN = n
-		}
-	case "sudoloop":
-		config.SudoLoop = true
-	case "nosudoloop":
-		config.SudoLoop = false
-	default:
-		return false
-	}
-
-	return true
+	return show(passToPacman(cmdArgs))
 }
 
 func handleVersion() {
-	fmt.Printf("yay v%s\n", version)
+	fmt.Printf("yay v%s - libalpm v%s\n", version, alpm.Version())
 }
 
 func handlePrint() (err error) {
 	switch {
 	case cmdArgs.existsArg("d", "defaultconfig"):
 		var tmpConfig Configuration
-		defaultSettings(&tmpConfig)
+		tmpConfig.defaultSettings()
+		tmpConfig.expandEnv()
 		fmt.Printf("%v", tmpConfig)
-	case cmdArgs.existsArg("g", "config"):
+	case cmdArgs.existsArg("g", "currentconfig"):
 		fmt.Printf("%v", config)
 	case cmdArgs.existsArg("n", "numberupgrades"):
 		err = printNumberOfUpdates()
 	case cmdArgs.existsArg("u", "upgrades"):
 		err = printUpdateList(cmdArgs)
+	case cmdArgs.existsArg("w", "news"):
+		err = printNewsFeed()
+	case cmdArgs.existsDouble("c", "complete"):
+		complete(true)
 	case cmdArgs.existsArg("c", "complete"):
-		switch {
-		case cmdArgs.existsArg("f", "fish"):
-			complete("fish")
-		default:
-			complete("sh")
-		}
+		complete(false)
 	case cmdArgs.existsArg("s", "stats"):
 		err = localStatistics()
 	default:
 		err = nil
 	}
-
 	return err
 }
 
-func handleYay() (err error) {
+func handleYay() error {
 	//_, options, targets := cmdArgs.formatArgs()
 	if cmdArgs.existsArg("gendb") {
-		err = createDevelDB()
-	} else if cmdArgs.existsArg("c", "clean") {
-		err = cleanDependencies()
-	} else if len(cmdArgs.targets) > 0 {
-		err = handleYogurt()
+		return createDevelDB()
 	}
-
-	return
+	if cmdArgs.existsDouble("c") {
+		return cleanDependencies(true)
+	}
+	if cmdArgs.existsArg("c", "clean") {
+		return cleanDependencies(false)
+	}
+	if len(cmdArgs.targets) > 0 {
+		return handleYogurt()
+	}
+	return nil
 }
 
-func handleGetpkgbuild() (err error) {
-	err = getPkgbuilds(cmdArgs.formatTargets())
-	return
+func handleGetpkgbuild() error {
+	return getPkgbuilds(cmdArgs.targets)
 }
 
-func handleYogurt() (err error) {
-	options := cmdArgs.formatArgs()
-	targets := cmdArgs.formatTargets()
-
+func handleYogurt() error {
 	config.SearchMode = NumberMenu
-	err = numberMenu(targets, options)
-
-	return
+	return numberMenu(cmdArgs.targets)
 }
 
-func handleSync() (err error) {
-	targets := cmdArgs.formatTargets()
-
-	if cmdArgs.existsArg("y", "refresh") {
-		arguments := cmdArgs.copy()
-		cmdArgs.delArg("y", "refresh")
-		arguments.delArg("u", "sysupgrade")
-		arguments.delArg("s", "search")
-		arguments.delArg("i", "info")
-		arguments.delArg("l", "list")
-		arguments.targets = make(stringSet)
-		err = passToPacman(arguments)
-		if err != nil {
-			return
-		}
-	}
+func handleSync() error {
+	targets := cmdArgs.targets
 
 	if cmdArgs.existsArg("s", "search") {
 		if cmdArgs.existsArg("q", "quiet") {
@@ -347,48 +251,81 @@ func handleSync() (err error) {
 		} else {
 			config.SearchMode = Detailed
 		}
-
-		err = syncSearch(targets)
-	} else if cmdArgs.existsArg("l", "list") {
-		err = passToPacman(cmdArgs)
-	} else if cmdArgs.existsArg("c", "clean") {
-		err = passToPacman(cmdArgs)
-	} else if cmdArgs.existsArg("i", "info") {
-		err = syncInfo(targets)
-	} else if cmdArgs.existsArg("u", "sysupgrade") {
-		err = install(cmdArgs)
-	} else if len(cmdArgs.targets) > 0 {
-		err = install(cmdArgs)
+		return syncSearch(targets)
 	}
-
-	return
+	if cmdArgs.existsArg("p", "print", "print-format") {
+		return show(passToPacman(cmdArgs))
+	}
+	if cmdArgs.existsArg("c", "clean") {
+		return syncClean(cmdArgs)
+	}
+	if cmdArgs.existsArg("l", "list") {
+		return show(passToPacman(cmdArgs))
+	}
+	if cmdArgs.existsArg("g", "groups") {
+		return show(passToPacman(cmdArgs))
+	}
+	if cmdArgs.existsArg("i", "info") {
+		return syncInfo(targets)
+	}
+	if cmdArgs.existsArg("u", "sysupgrade") {
+		return install(cmdArgs)
+	}
+	if len(cmdArgs.targets) > 0 {
+		return install(cmdArgs)
+	}
+	if cmdArgs.existsArg("y", "refresh") {
+		return show(passToPacman(cmdArgs))
+	}
+	return nil
 }
 
-func handleRemove() (err error) {
-	removeVCSPackage(cmdArgs.formatTargets())
-	err = passToPacman(cmdArgs)
-	return
+func handleRemove() error {
+	removeVCSPackage(cmdArgs.targets)
+	return show(passToPacman(cmdArgs))
 }
 
 // NumberMenu presents a CLI for selecting packages to install.
-func numberMenu(pkgS []string, flags []string) (err error) {
-	aurQ, aurErr := narrowSearch(pkgS, true)
-	numaq := len(aurQ)
-	repoQ, numpq, err := queryRepo(pkgS)
-	if err != nil {
-		return
+func numberMenu(pkgS []string) (err error) {
+	var (
+		aurErr, repoErr error
+		aq              aurQuery
+		pq              repoQuery
+		lenaq, lenpq    int
+	)
+
+	pkgS = removeInvalidTargets(pkgS)
+
+	if mode == ModeAUR || mode == ModeAny {
+		aq, aurErr = narrowSearch(pkgS, true)
+		lenaq = len(aq)
+	}
+	if mode == ModeRepo || mode == ModeAny {
+		pq, repoErr = queryRepo(pkgS)
+		lenpq = len(pq)
+		if repoErr != nil {
+			return err
+		}
 	}
 
-	if numpq == 0 && numaq == 0 {
-		return fmt.Errorf("no packages match search")
+	if lenpq == 0 && lenaq == 0 {
+		return fmt.Errorf("No packages match search")
 	}
 
 	if config.SortMode == BottomUp {
-		aurQ.printSearch(numpq + 1)
-		repoQ.printSearch()
+		if mode == ModeAUR || mode == ModeAny {
+			aq.printSearch(lenpq + 1)
+		}
+		if mode == ModeRepo || mode == ModeAny {
+			pq.printSearch()
+		}
 	} else {
-		repoQ.printSearch()
-		aurQ.printSearch(numpq + 1)
+		if mode == ModeRepo || mode == ModeAny {
+			pq.printSearch()
+		}
+		if mode == ModeAUR || mode == ModeAny {
+			aq.printSearch(lenpq + 1)
+		}
 	}
 
 	if aurErr != nil {
@@ -400,12 +337,11 @@ func numberMenu(pkgS []string, flags []string) (err error) {
 	fmt.Print(bold(green(arrow + " ")))
 
 	reader := bufio.NewReader(os.Stdin)
-	numberBuf, overflow, err := reader.ReadLine()
 
+	numberBuf, overflow, err := reader.ReadLine()
 	if err != nil {
 		return err
 	}
-
 	if overflow {
 		return fmt.Errorf("Input too long")
 	}
@@ -415,32 +351,31 @@ func numberMenu(pkgS []string, flags []string) (err error) {
 
 	isInclude := len(exclude) == 0 && len(otherExclude) == 0
 
-	for i, pkg := range repoQ {
-		target := len(repoQ) - i
+	for i, pkg := range pq {
+		target := len(pq) - i
 		if config.SortMode == TopDown {
 			target = i + 1
 		}
 
-		if isInclude && include.get(target) {
-			arguments.addTarget(pkg.DB().Name() + "/" + pkg.Name())
-		}
-		if !isInclude && !exclude.get(target) {
+		if (isInclude && include.get(target)) || (!isInclude && !exclude.get(target)) {
 			arguments.addTarget(pkg.DB().Name() + "/" + pkg.Name())
 		}
 	}
 
-	for i, pkg := range aurQ {
-		target := len(aurQ) - i + len(repoQ)
+	for i, pkg := range aq {
+		target := len(aq) - i + len(pq)
 		if config.SortMode == TopDown {
-			target = i + 1 + len(repoQ)
+			target = i + 1 + len(pq)
 		}
 
-		if isInclude && include.get(target) {
+		if (isInclude && include.get(target)) || (!isInclude && !exclude.get(target)) {
 			arguments.addTarget("aur/" + pkg.Name)
 		}
-		if !isInclude && !exclude.get(target) {
-			arguments.addTarget("aur/" + pkg.Name)
-		}
+	}
+
+	if len(arguments.targets) == 0 {
+		fmt.Println("There is nothing to do")
+		return nil
 	}
 
 	if config.SudoLoop {
@@ -450,87 +385,4 @@ func numberMenu(pkgS []string, flags []string) (err error) {
 	err = install(arguments)
 
 	return err
-}
-
-// passToPacman outsources execution to pacman binary without modifications.
-func passToPacman(args *arguments) error {
-	var cmd *exec.Cmd
-	argArr := make([]string, 0)
-
-	if args.needRoot() {
-		argArr = append(argArr, "sudo")
-	}
-
-	argArr = append(argArr, config.PacmanBin)
-	argArr = append(argArr, cmdArgs.formatGlobals()...)
-	argArr = append(argArr, args.formatArgs()...)
-	if config.NoConfirm {
-		argArr = append(argArr, "--noconfirm")
-	}
-
-	argArr = append(argArr, "--")
-
-	argArr = append(argArr, args.formatTargets()...)
-
-	cmd = exec.Command(argArr[0], argArr[1:]...)
-
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	err := cmd.Run()
-
-	if err != nil {
-		return fmt.Errorf("")
-	}
-	return nil
-}
-
-//passToPacman but return the output instead of showing the user
-func passToPacmanCapture(args *arguments) (string, string, error) {
-	var outbuf, errbuf bytes.Buffer
-	var cmd *exec.Cmd
-	argArr := make([]string, 0)
-
-	if args.needRoot() {
-		argArr = append(argArr, "sudo")
-	}
-
-	argArr = append(argArr, config.PacmanBin)
-	argArr = append(argArr, cmdArgs.formatGlobals()...)
-	argArr = append(argArr, args.formatArgs()...)
-	if config.NoConfirm {
-		argArr = append(argArr, "--noconfirm")
-	}
-
-	argArr = append(argArr, "--")
-
-	argArr = append(argArr, args.formatTargets()...)
-
-	cmd = exec.Command(argArr[0], argArr[1:]...)
-	cmd.Stdout = &outbuf
-	cmd.Stderr = &errbuf
-
-	err := cmd.Run()
-	stdout := outbuf.String()
-	stderr := errbuf.String()
-
-	return stdout, stderr, err
-}
-
-// passToMakepkg outsources execution to makepkg binary without modifications.
-func passToMakepkg(dir string, args ...string) (err error) {
-
-	if config.NoConfirm {
-		args = append(args)
-	}
-
-	mflags := strings.Fields(config.MFlags)
-	args = append(args, mflags...)
-
-	cmd := exec.Command(config.MakepkgBin, args...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	cmd.Dir = dir
-	err = cmd.Run()
-	if err == nil {
-		_ = saveVCSInfo()
-	}
-	return
 }

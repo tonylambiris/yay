@@ -159,18 +159,16 @@ func (pkg Package) OptionalDepends() DependList {
 }
 
 // Depends returns the package's check dependency list.
-//Exists in futre alpm
-/*func (pkg Package) CheckDepends() DependList {
+func (pkg Package) CheckDepends() DependList {
 	ptr := unsafe.Pointer(C.alpm_pkg_get_checkdepends(pkg.pmpkg))
 	return DependList{(*list)(ptr)}
-}*/
+}
 
 // Depends returns the package's make dependency list.
-//Exists in futre alpm
-/*func (pkg Package) MakeDepends() DependList {
+func (pkg Package) MakeDepends() DependList {
 	ptr := unsafe.Pointer(C.alpm_pkg_get_makedepends(pkg.pmpkg))
 	return DependList{(*list)(ptr)}
-}*/
+}
 
 // Description returns the package's description.
 func (pkg Package) Description() string {
@@ -274,12 +272,27 @@ func (pkg Package) ComputeRequiredBy() []string {
 	for i := (*list)(unsafe.Pointer(result)); i != nil; i = i.Next {
 		defer C.free(unsafe.Pointer(i))
 		if i.Data != nil {
-			defer C.free(unsafe.Pointer(i.Data))
-			name := C.GoString((*C.char)(unsafe.Pointer(i.Data)))
+			defer C.free(i.Data)
+			name := C.GoString((*C.char)(i.Data))
 			requiredby = append(requiredby, name)
 		}
 	}
 	return requiredby
+}
+
+// ComputeOptionalFor returns the names of packages that optionally require the given package
+func (pkg Package) ComputeOptionalFor() []string {
+	result := C.alpm_pkg_compute_optionalfor(pkg.pmpkg)
+	optionalfor := make([]string, 0)
+	for i := (*list)(unsafe.Pointer(result)); i != nil; i = i.Next {
+		defer C.free(unsafe.Pointer(i))
+		if i.Data != nil {
+			defer C.free(i.Data)
+			name := C.GoString((*C.char)(i.Data))
+			optionalfor = append(optionalfor, name)
+		}
+	}
+	return optionalfor
 }
 
 // NewVersion checks if there is a new version of the package in the Synced DBs.

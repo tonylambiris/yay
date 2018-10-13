@@ -2,12 +2,13 @@ package aur
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"net/http"
 	"net/url"
 )
 
-const aurURL = "https://aur.archlinux.org/rpc.php?"
+//AURURL is the base string from which the query is built
+var AURURL = "https://aur.archlinux.org/rpc.php?"
 
 type response struct {
 	Error       string `json:"error"`
@@ -40,13 +41,14 @@ type Pkg struct {
 	Provides       []string `json:"Provides"`
 	Replaces       []string `json:"Replaces"`
 	OptDepends     []string `json:"OptDepends"`
+	Groups         []string `json:"Groups"`
 	License        []string `json:"License"`
 	Keywords       []string `json:"Keywords"`
 }
 
 func get(values url.Values) ([]Pkg, error) {
 	values.Set("v", "5")
-	resp, err := http.Get(aurURL + values.Encode())
+	resp, err := http.Get(AURURL + values.Encode())
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +62,7 @@ func get(values url.Values) ([]Pkg, error) {
 	}
 
 	if len(result.Error) > 0 {
-		return nil, fmt.Errorf(result.Error)
+		return nil, errors.New(result.Error)
 	}
 
 	return result.Results, nil

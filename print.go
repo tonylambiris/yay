@@ -1,7 +1,12 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/xml"
 	"fmt"
+	"io/ioutil"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -11,6 +16,34 @@ import (
 )
 
 const arrow = "==>"
+const smallArrow = " ->"
+
+func (warnings *aurWarnings) print() {
+	if len(warnings.Missing) > 0 {
+		fmt.Print(bold(yellow(smallArrow)) + " Missing AUR Packages:")
+		for _, name := range warnings.Missing {
+			fmt.Print("  " + cyan(name))
+		}
+		fmt.Println()
+	}
+
+	if len(warnings.Orphans) > 0 {
+		fmt.Print(bold(yellow(smallArrow)) + " Orphaned AUR Packages:")
+		for _, name := range warnings.Orphans {
+			fmt.Print("  " + cyan(name))
+		}
+		fmt.Println()
+	}
+
+	if len(warnings.OutOfDate) > 0 {
+		fmt.Print(bold(yellow(smallArrow)) + " Out Of Date AUR Packages:")
+		for _, name := range warnings.OutOfDate {
+			fmt.Print("  " + cyan(name))
+		}
+		fmt.Println()
+	}
+
+}
 
 // human method returns results in human readable format.
 func human(size int64) string {
@@ -55,8 +88,12 @@ func (q aurQuery) printSearch(start int) {
 			toprint += bold(red("(Out-of-date "+formatTime(res.OutOfDate)+")")) + " "
 		}
 
-		if _, err := localDb.PkgByName(res.Name); err == nil {
-			toprint += bold(green("(Installed)"))
+		if pkg, err := localDb.PkgByName(res.Name); err == nil {
+			if pkg.Version() != res.Version {
+				toprint += bold(green("(Installed: " + pkg.Version() + ")"))
+			} else {
+				toprint += bold(green("(Installed)"))
+			}
 		}
 		toprint += "\n    " + res.Description
 		fmt.Println(toprint)
@@ -89,8 +126,12 @@ func (s repoQuery) printSearch() {
 
 		localDb, err := alpmHandle.LocalDb()
 		if err == nil {
-			if _, err = localDb.PkgByName(res.Name()); err == nil {
-				toprint += bold(green("(Installed)"))
+			if pkg, err := localDb.PkgByName(res.Name()); err == nil {
+				if pkg.Version() != res.Version() {
+					toprint += bold(green("(Installed: " + pkg.Version() + ")"))
+				} else {
+					toprint += bold(green("(Installed)"))
+				}
 			}
 		}
 
@@ -102,11 +143,12 @@ func (s repoQuery) printSearch() {
 // Pretty print a set of packages from the same package base.
 // Packages foo and bar from a pkgbase named base would print like so:
 // base (foo bar)
-func formatPkgbase(pkg *rpc.Pkg, bases map[string][]*rpc.Pkg) string {
+func (base Base) String() string {
+	pkg := base[0]
 	str := pkg.PackageBase
-	if len(bases[pkg.PackageBase]) > 1 || pkg.PackageBase != pkg.Name {
+	if len(base) > 1 || pkg.PackageBase != pkg.Name {
 		str2 := " ("
-		for _, split := range bases[pkg.PackageBase] {
+		for _, split := range base {
 			str2 += split.Name + " "
 		}
 		str2 = str2[:len(str2)-1] + ")"
@@ -117,23 +159,38 @@ func formatPkgbase(pkg *rpc.Pkg, bases map[string][]*rpc.Pkg) string {
 	return str
 }
 
+func (u upgrade) StylizedNameWithRepository() string {
+	return bold(colourHash(u.Repository)) + "/" + bold(u.Name)
+}
+
 // Print prints the details of the packages to upgrade.
-func (u upSlice) Print(start int) {
+func (u upSlice) print() {
+	longestName, longestVersion := 0, 0
+	for _, pack := range u {
+		packNameLen := len(pack.StylizedNameWithRepository())
+		version, _ := getVersionDiff(pack.LocalVersion, pack.RemoteVersion)
+		packVersionLen := len(version)
+		longestName = max(packNameLen, longestName)
+		longestVersion = max(packVersionLen, longestVersion)
+	}
+
+	namePadding := fmt.Sprintf("%%-%ds  ", longestName)
+	versionPadding := fmt.Sprintf("%%-%ds", longestVersion)
+	numberPadding := fmt.Sprintf("%%%dd  ", len(fmt.Sprintf("%v", len(u))))
+
 	for k, i := range u {
 		left, right := getVersionDiff(i.LocalVersion, i.RemoteVersion)
 
-		fmt.Print(magenta(fmt.Sprintf("%3d ", len(u)+start-k-1)))
-		fmt.Print(bold(colourHash(i.Repository)), "/", cyan(i.Name))
+		fmt.Print(magenta(fmt.Sprintf(numberPadding, len(u)-k)))
 
-		w := 70 - len(i.Repository) - len(i.Name)
-		padding := fmt.Sprintf("%%%ds", w)
-		fmt.Printf(padding, left)
-		fmt.Printf(" -> %s\n", right)
+		fmt.Printf(namePadding, i.StylizedNameWithRepository())
+
+		fmt.Printf("%s -> %s\n", fmt.Sprintf(versionPadding, left), right)
 	}
 }
 
 // printDownloadsFromRepo prints repository packages to be downloaded
-func printDepCatagories(dc *depCatagories) {
+func (do *depOrder) Print() {
 	repo := ""
 	repoMake := ""
 	aur := ""
@@ -144,47 +201,48 @@ func printDepCatagories(dc *depCatagories) {
 	aurLen := 0
 	aurMakeLen := 0
 
-	for _, pkg := range dc.Repo {
-		if dc.MakeOnly.get(pkg.Name()) {
-			repoMake += "  " + pkg.Name() + "-" + pkg.Version()
-			repoMakeLen++
-		} else {
+	for _, pkg := range do.Repo {
+		if do.Runtime.get(pkg.Name()) {
 			repo += "  " + pkg.Name() + "-" + pkg.Version()
 			repoLen++
+		} else {
+			repoMake += "  " + pkg.Name() + "-" + pkg.Version()
+			repoMakeLen++
 		}
 	}
 
-	for _, pkg := range dc.Aur {
-		pkgStr := "  " + pkg.PackageBase + "-" + pkg.Version
+	for _, base := range do.Aur {
+		pkg := base.Pkgbase()
+		pkgStr := "  " + pkg + "-" + base[0].Version
 		pkgStrMake := pkgStr
 
 		push := false
 		pushMake := false
 
-		if len(dc.Bases[pkg.PackageBase]) > 1 || pkg.PackageBase != pkg.Name {
+		if len(base) > 1 || pkg != base[0].Name {
 			pkgStr += " ("
 			pkgStrMake += " ("
 
-			for _, split := range dc.Bases[pkg.PackageBase] {
-				if dc.MakeOnly.get(split.Name) {
-					pkgStrMake += split.Name + " "
-					aurMakeLen++
-					pushMake = true
-				} else {
+			for _, split := range base {
+				if do.Runtime.get(split.Name) {
 					pkgStr += split.Name + " "
 					aurLen++
 					push = true
+				} else {
+					pkgStrMake += split.Name + " "
+					aurMakeLen++
+					pushMake = true
 				}
 			}
 
 			pkgStr = pkgStr[:len(pkgStr)-1] + ")"
 			pkgStrMake = pkgStrMake[:len(pkgStrMake)-1] + ")"
-		} else if dc.MakeOnly.get(pkg.Name) {
-			aurMakeLen++
-			pushMake = true
-		} else {
+		} else if do.Runtime.get(base[0].Name) {
 			aurLen++
 			push = true
+		} else {
+			aurMakeLen++
+			pushMake = true
 		}
 
 		if push {
@@ -208,28 +266,51 @@ func printDownloads(repoName string, length int, packages string) {
 
 	repoInfo := bold(blue(
 		"[" + repoName + ": " + strconv.Itoa(length) + "]"))
-	fmt.Println(repoInfo + magenta(packages))
+	fmt.Println(repoInfo + cyan(packages))
+}
+
+func printInfoValue(str, value string) {
+	if value == "" {
+		value = "None"
+	}
+
+	fmt.Printf(bold("%-16s%s")+" %s\n", str, ":", value)
 }
 
 // PrintInfo prints package info like pacman -Si.
 func PrintInfo(a *rpc.Pkg) {
-	fmt.Println(bold("Repository      :"), "aur")
-	fmt.Println(bold("Name            :"), a.Name)
-	fmt.Println(bold("Version         :"), a.Version)
-	fmt.Println(bold("Description     :"), a.Description)
-	fmt.Println(bold("URL             :"), a.URL)
-	fmt.Println(bold("Licenses        :"), strings.Join(a.License, "  "))
-	fmt.Println(bold("Provides        :"), strings.Join(a.Provides, "  "))
-	fmt.Println(bold("Depends On      :"), strings.Join(a.Depends, "  "))
-	fmt.Println(bold("Make Deps       :"), strings.Join(a.MakeDepends, "  "))
-	fmt.Println(bold("Check Deps      :"), strings.Join(a.CheckDepends, "  "))
-	fmt.Println(bold("Optional Deps   :"), strings.Join(a.OptDepends, "  "))
-	fmt.Println(bold("Conflicts With  :"), strings.Join(a.Conflicts, "  "))
-	fmt.Println(bold("Maintainer      :"), a.Maintainer)
-	fmt.Println(bold("Votes           :"), a.NumVotes)
-	fmt.Println(bold("Popularity      :"), a.Popularity)
+	printInfoValue("Repository", "aur")
+	printInfoValue("Name", a.Name)
+	printInfoValue("Keywords", strings.Join(a.Keywords, "  "))
+	printInfoValue("Version", a.Version)
+	printInfoValue("Description", a.Description)
+	printInfoValue("URL", a.URL)
+	printInfoValue("AUR URL", config.AURURL+"/packages/"+a.Name)
+	printInfoValue("Groups", strings.Join(a.Groups, "  "))
+	printInfoValue("Licenses", strings.Join(a.License, "  "))
+	printInfoValue("Provides", strings.Join(a.Provides, "  "))
+	printInfoValue("Depends On", strings.Join(a.Depends, "  "))
+	printInfoValue("Make Deps", strings.Join(a.MakeDepends, "  "))
+	printInfoValue("Check Deps", strings.Join(a.CheckDepends, "  "))
+	printInfoValue("Optional Deps", strings.Join(a.OptDepends, "  "))
+	printInfoValue("Conflicts With", strings.Join(a.Conflicts, "  "))
+	printInfoValue("Maintainer", a.Maintainer)
+	printInfoValue("Votes", fmt.Sprintf("%d", a.NumVotes))
+	printInfoValue("Popularity", fmt.Sprintf("%f", a.Popularity))
+	printInfoValue("First Submitted", formatTime(a.FirstSubmitted))
+	printInfoValue("Last Modified", formatTime(a.LastModified))
+
 	if a.OutOfDate != 0 {
-		fmt.Println(bold("Out-of-date     :"), "Yes", "["+formatTime(a.OutOfDate)+"]")
+		printInfoValue("Out-of-date", "Yes ["+formatTime(a.OutOfDate)+"]")
+	} else {
+		printInfoValue("Out-of-date", "No")
+	}
+
+	if cmdArgs.existsDouble("i") {
+		printInfoValue("ID", fmt.Sprintf("%d", a.ID))
+		printInfoValue("Package Base ID", fmt.Sprintf("%d", a.PackageBaseID))
+		printInfoValue("Package Base", a.PackageBase)
+		printInfoValue("Snapshot URL", config.AURURL+a.URLPath)
 	}
 
 	fmt.Println()
@@ -269,16 +350,16 @@ func localStatistics() error {
 
 	fmt.Printf(bold("Yay version v%s\n"), version)
 	fmt.Println(bold(cyan("===========================================")))
-	fmt.Println(bold(green("Total installed packages: ")) + magenta(strconv.Itoa(info.Totaln)))
-	fmt.Println(bold(green("Total foreign installed packages: ")) + magenta(strconv.Itoa(len(remoteNames))))
-	fmt.Println(bold(green("Explicitly installed packages: ")) + magenta(strconv.Itoa(info.Expln)))
-	fmt.Println(bold(green("Total Size occupied by packages: ")) + magenta(human(info.TotalSize)))
+	fmt.Println(bold(green("Total installed packages: ")) + cyan(strconv.Itoa(info.Totaln)))
+	fmt.Println(bold(green("Total foreign installed packages: ")) + cyan(strconv.Itoa(len(remoteNames))))
+	fmt.Println(bold(green("Explicitly installed packages: ")) + cyan(strconv.Itoa(info.Expln)))
+	fmt.Println(bold(green("Total Size occupied by packages: ")) + cyan(human(info.TotalSize)))
 	fmt.Println(bold(cyan("===========================================")))
 	fmt.Println(bold(green("Ten biggest packages:")))
 	biggestPackages()
 	fmt.Println(bold(cyan("===========================================")))
 
-	aurInfo(remoteNames)
+	aurInfoPrint(remoteNames)
 
 	return nil
 }
@@ -286,9 +367,10 @@ func localStatistics() error {
 //TODO: Make it less hacky
 func printNumberOfUpdates() error {
 	//todo
+	warnings := &aurWarnings{}
 	old := os.Stdout // keep backup of the real stdout
 	os.Stdout = nil
-	aurUp, repoUp, err := upList()
+	aurUp, repoUp, err := upList(warnings)
 	os.Stdout = old // restoring the real stdout
 	if err != nil {
 		return err
@@ -300,31 +382,45 @@ func printNumberOfUpdates() error {
 
 //TODO: Make it less hacky
 func printUpdateList(parser *arguments) error {
+	targets := sliceToStringSet(parser.targets)
+	warnings := &aurWarnings{}
 	old := os.Stdout // keep backup of the real stdout
 	os.Stdout = nil
 	_, _, localNames, remoteNames, err := filterPackages()
-	aurUp, repoUp, err := upList()
+	if err != nil {
+		return err
+	}
+
+	aurUp, repoUp, err := upList(warnings)
 	os.Stdout = old // restoring the real stdout
 	if err != nil {
 		return err
 	}
 
-	noTargets := len(parser.targets) == 0
+	noTargets := len(targets) == 0
 
-	if !parser.existsArg("m", "foreigne") {
+	if !parser.existsArg("m", "foreign") {
 		for _, pkg := range repoUp {
-			if noTargets || parser.targets.get(pkg.Name) {
-				fmt.Printf("%s %s -> %s\n", bold(pkg.Name), green(pkg.LocalVersion), green(pkg.RemoteVersion))
-				delete(parser.targets, pkg.Name)
+			if noTargets || targets.get(pkg.Name) {
+				if parser.existsArg("q", "quiet") {
+					fmt.Printf("%s\n", pkg.Name)
+				} else {
+					fmt.Printf("%s %s -> %s\n", bold(pkg.Name), green(pkg.LocalVersion), green(pkg.RemoteVersion))
+				}
+				delete(targets, pkg.Name)
 			}
 		}
 	}
 
 	if !parser.existsArg("n", "native") {
 		for _, pkg := range aurUp {
-			if noTargets || parser.targets.get(pkg.Name) {
-				fmt.Printf("%s %s -> %s\n", bold(pkg.Name), green(pkg.LocalVersion), green(pkg.RemoteVersion))
-				delete(parser.targets, pkg.Name)
+			if noTargets || targets.get(pkg.Name) {
+				if parser.existsArg("q", "quiet") {
+					fmt.Printf("%s\n", pkg.Name)
+				} else {
+					fmt.Printf("%s %s -> %s\n", bold(pkg.Name), green(pkg.LocalVersion), green(pkg.RemoteVersion))
+				}
+				delete(targets, pkg.Name)
 			}
 		}
 	}
@@ -332,7 +428,7 @@ func printUpdateList(parser *arguments) error {
 	missing := false
 
 outer:
-	for pkg := range parser.targets {
+	for pkg := range targets {
 		for _, name := range localNames {
 			if name == pkg {
 				continue outer
@@ -356,66 +452,141 @@ outer:
 	return nil
 }
 
-// Formats a unix timestamp to yyyy/mm/dd
+type item struct {
+	Title       string `xml:"title"`
+	Link        string `xml:"link"`
+	Description string `xml:"description"`
+	PubDate     string `xml:"pubDate"`
+	Creator     string `xml:"dc:creator"`
+}
+
+func (item item) print(buildTime time.Time) {
+	var fd string
+	date, err := time.Parse(time.RFC1123Z, item.PubDate)
+
+	if err != nil {
+		fmt.Println(err)
+	} else {
+		fd = formatTime(int(date.Unix()))
+		if _, double, _ := cmdArgs.getArg("news", "w"); !double && !buildTime.IsZero() {
+			if buildTime.After(date) {
+				return
+			}
+		}
+	}
+
+	fmt.Println(bold(magenta(fd)), bold(strings.TrimSpace(item.Title)))
+	//fmt.Println(strings.TrimSpace(item.Link))
+
+	if !cmdArgs.existsArg("q", "quiet") {
+		desc := strings.TrimSpace(parseNews(item.Description))
+		fmt.Println(desc)
+	}
+}
+
+type channel struct {
+	Title         string `xml:"title"`
+	Link          string `xml:"link"`
+	Description   string `xml:"description"`
+	Language      string `xml:"language"`
+	Lastbuilddate string `xml:"lastbuilddate"`
+	Items         []item `xml:"item"`
+}
+
+type rss struct {
+	Channel channel `xml:"channel"`
+}
+
+func printNewsFeed() error {
+	resp, err := http.Get("https://archlinux.org/feeds/news")
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	rss := rss{}
+
+	d := xml.NewDecoder(bytes.NewReader(body))
+	err = d.Decode(&rss)
+	if err != nil {
+		return err
+	}
+
+	buildTime, err := lastBuildTime()
+	if err != nil {
+		return err
+	}
+
+	if config.SortMode == BottomUp {
+		for i := len(rss.Channel.Items) - 1; i >= 0; i-- {
+			rss.Channel.Items[i].print(buildTime)
+		}
+	} else {
+		for i := 0; i < len(rss.Channel.Items); i++ {
+			rss.Channel.Items[i].print(buildTime)
+		}
+	}
+
+	return nil
+}
+
+// Formats a unix timestamp to ISO 8601 date (yyyy-mm-dd)
 func formatTime(i int) string {
 	t := time.Unix(int64(i), 0)
-	return fmt.Sprintf("%d/%02d/%02d", t.Year(), int(t.Month()), t.Day())
+	return t.Format("2006-01-02")
+}
+
+const (
+	redCode     = "\x1b[31m"
+	greenCode   = "\x1b[32m"
+	yellowCode  = "\x1b[33m"
+	blueCode    = "\x1b[34m"
+	magentaCode = "\x1b[35m"
+	cyanCode    = "\x1b[36m"
+	boldCode    = "\x1b[1m"
+
+	resetCode = "\x1b[0m"
+)
+
+func stylize(startCode, in string) string {
+	if useColor {
+		return startCode + in + resetCode
+	}
+
+	return in
 }
 
 func red(in string) string {
-	if useColor {
-		return "\x1b[31m" + in + "\x1b[0m"
-	}
-
-	return in
+	return stylize(redCode, in)
 }
 
 func green(in string) string {
-	if useColor {
-		return "\x1b[32m" + in + "\x1b[0m"
-	}
-
-	return in
+	return stylize(greenCode, in)
 }
 
 func yellow(in string) string {
-	if useColor {
-		return "\x1b[33m" + in + "\x1b[0m"
-	}
-
-	return in
+	return stylize(yellowCode, in)
 }
 
 func blue(in string) string {
-	if useColor {
-		return "\x1b[34m" + in + "\x1b[0m"
-	}
-
-	return in
+	return stylize(blueCode, in)
 }
 
 func cyan(in string) string {
-	if useColor {
-		return "\x1b[36m" + in + "\x1b[0m"
-	}
-
-	return in
+	return stylize(cyanCode, in)
 }
 
 func magenta(in string) string {
-	if useColor {
-		return "\x1b[35m" + in + "\x1b[0m"
-	}
-
-	return in
+	return stylize(magentaCode, in)
 }
 
 func bold(in string) string {
-	if useColor {
-		return "\x1b[1m" + in + "\x1b[0m"
-	}
-
-	return in
+	return stylize(boldCode, in)
 }
 
 // Colours text using a hashing algorithm. The same text will always produce the
@@ -424,9 +595,67 @@ func colourHash(name string) (output string) {
 	if !useColor {
 		return name
 	}
-	var hash = 5381
+	var hash uint = 5381
 	for i := 0; i < len(name); i++ {
-		hash = int(name[i]) + ((hash << 5) + (hash))
+		hash = uint(name[i]) + ((hash << 5) + (hash))
 	}
 	return fmt.Sprintf("\x1b[%dm%s\x1b[0m", hash%6+31, name)
+}
+
+func providerMenu(dep string, providers providers) *rpc.Pkg {
+	size := providers.Len()
+
+	fmt.Print(bold(cyan(":: ")))
+	str := bold(fmt.Sprintf(bold("There are %d providers available for %s:"), size, dep))
+
+	size = 1
+	str += bold(cyan("\n:: ")) + bold("Repository AUR\n    ")
+
+	for _, pkg := range providers.Pkgs {
+		str += fmt.Sprintf("%d) %s ", size, pkg.Name)
+		size++
+	}
+
+	fmt.Println(str)
+
+	for {
+		fmt.Print("\nEnter a number (default=1): ")
+
+		if config.NoConfirm {
+			fmt.Println("1")
+			return providers.Pkgs[0]
+		}
+
+		reader := bufio.NewReader(os.Stdin)
+		numberBuf, overflow, err := reader.ReadLine()
+
+		if err != nil {
+			fmt.Println(err)
+			break
+		}
+
+		if overflow {
+			fmt.Println("Input too long")
+			continue
+		}
+
+		if string(numberBuf) == "" {
+			return providers.Pkgs[0]
+		}
+
+		num, err := strconv.Atoi(string(numberBuf))
+		if err != nil {
+			fmt.Printf("%s invalid number: %s\n", red("error:"), string(numberBuf))
+			continue
+		}
+
+		if num < 1 || num > size {
+			fmt.Printf("%s invalid value: %d is not between %d and %d\n", red("error:"), num, 1, size)
+			continue
+		}
+
+		return providers.Pkgs[num-1]
+	}
+
+	return nil
 }

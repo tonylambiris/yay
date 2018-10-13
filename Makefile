@@ -1,23 +1,20 @@
-.PHONY: all default install uninstall test build release clean
+.PHONY: all default install uninstall test build release clean package
 
 PREFIX := /usr
 DESTDIR :=
 
-ifndef VERSION
-MAJORVERSION := 5
+MAJORVERSION := 8
 MINORVERSION ?= $(shell git rev-list --count master)
-endif
-VERSION := ${MAJORVERSION}.${MINORVERSION}
+PATCHVERSION := 0
+VERSION ?= ${MAJORVERSION}.${MINORVERSION}.${PATCHVERSION}
 
 LDFLAGS := -ldflags '-s -w -X main.version=${VERSION}'
-GOFILES := $(shell ls *.go | grep -v /vendor/)
 ARCH := $(shell uname -m)
 PKGNAME := yay
 BINNAME := yay
 PACKAGE := ${PKGNAME}_${VERSION}_${ARCH}
 
 export GOPATH=$(shell pwd)/.go
-export GOROOT=/usr/lib/go
 
 default: build
 

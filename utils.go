@@ -1,10 +1,14 @@
 package main
 
 import (
-	"io/ioutil"
-	"strings"
+	"fmt"
+	"sync"
 	"unicode"
 )
+
+const gitEmptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+type mapStringSet map[string]stringSet
 
 type intRange struct {
 	min int
@@ -48,39 +52,12 @@ func max(a, b int) int {
 	return a
 }
 
-func addMapStringSet(h map[string]stringSet, n string, v string) {
-	_, ok := h[n]
+func (mss mapStringSet) Add(n string, v string) {
+	_, ok := mss[n]
 	if !ok {
-		h[n] = make(stringSet)
+		mss[n] = make(stringSet)
 	}
-	h[n].set(v)
-}
-
-func addMapStringSlice(h map[string][]string, n string, v string) {
-	_, ok := h[n]
-	if !ok {
-		h[n] = make([]string, 0, 1)
-	}
-	h[n] = append(h[n], v)
-}
-
-func completeFileName(dir, name string) (string, error) {
-	files, err := ioutil.ReadDir(dir)
-	if err != nil {
-		return "", err
-	}
-
-	for _, file := range files {
-		if file.IsDir() {
-			continue
-		}
-
-		if strings.HasPrefix(file.Name(), name) {
-			return dir + file.Name(), nil
-		}
-	}
-
-	return "", nil
+	mss[n].set(v)
 }
 
 func lessRunes(iRunes, jRunes []rune) bool {
@@ -107,4 +84,81 @@ func lessRunes(iRunes, jRunes []rune) bool {
 	}
 
 	return len(iRunes) < len(jRunes)
+}
+
+func stringSliceEqual(a, b []string) bool {
+	if a == nil && b == nil {
+		return true
+	}
+
+	if a == nil || b == nil {
+		return false
+	}
+
+	if len(a) != len(b) {
+		return false
+	}
+
+	for i := 0; i < len(a); i++ {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
+func removeInvalidTargets(targets []string) []string {
+	filteredTargets := make([]string, 0)
+
+	for _, target := range targets {
+		db, _ := splitDbFromName(target)
+
+		if db == "aur" && mode == ModeRepo {
+			fmt.Printf("%s %s %s\n", bold(yellow(arrow)), cyan(target), bold("Can't use target with option --repo -- skipping"))
+			continue
+		}
+
+		if db != "aur" && db != "" && mode == ModeAUR {
+			fmt.Printf("%s %s %s\n", bold(yellow(arrow)), cyan(target), bold("Can't use target with option --aur -- skipping"))
+			continue
+		}
+
+		filteredTargets = append(filteredTargets, target)
+	}
+
+	return filteredTargets
+}
+
+type MultiError struct {
+	Errors []error
+	mux    sync.Mutex
+}
+
+func (err *MultiError) Error() string {
+	str := ""
+
+	for _, e := range err.Errors {
+		str += e.Error() + "\n"
+	}
+
+	return str[:len(str)-1]
+}
+
+func (err *MultiError) Add(e error) {
+	if e == nil {
+		return
+	}
+
+	err.mux.Lock()
+	err.Errors = append(err.Errors, e)
+	err.mux.Unlock()
+}
+
+func (err *MultiError) Return() error {
+	if len(err.Errors) > 0 {
+		return err
+	}
+
+	return nil
 }

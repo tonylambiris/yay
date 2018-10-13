@@ -44,12 +44,12 @@ func TestParsing(t *testing.T) {
 	}
 
 	sources := []source{
-		{"github.com/neovim/neovim.git", "HEAD", []string{"git", "https"}},
+		{"github.com/neovim/neovim.git", "HEAD", []string{"https"}},
 		{"github.com/jguer/yay.git", "master", []string{"git"}},
 		{"github.com/davidgiven/ack", "HEAD", []string{"git"}},
 		{"", "", nil},
 		{"", "", nil},
-		{"github.com/jguer/yay.git", "foo", []string{"a", "b", "c", "d", "e", "f"}},
+		{"", "", nil},
 	}
 
 	for n, url := range urls {
@@ -60,7 +60,7 @@ func TestParsing(t *testing.T) {
 			branch != compare.Branch ||
 			!isEqual(protocols, compare.Protocols) {
 
-			t.Fatalf("Test %d failed: Expected: url=%+v branch=%+v protocols=%+v\ngot url=%+v branch=%+v protocols=%+v", n+1, url, branch, protocols, compare.URL, compare.Branch, compare.Protocols)
+			t.Fatalf("Test %d failed: Expected: url=%+v branch=%+v protocols=%+v\ngot url=%+v branch=%+v protocols=%+v", n+1, compare.URL, compare.Branch, compare.Protocols, url, branch, protocols)
 		}
 	}
 

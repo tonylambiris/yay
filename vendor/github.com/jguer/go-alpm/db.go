@@ -8,6 +8,7 @@ package alpm
 
 /*
 #include <alpm.h>
+#include <alpm_list.h>
 */
 import "C"
 
@@ -89,7 +90,7 @@ func (h Handle) RegisterSyncDb(dbname string, siglevel SigLevel) (*Db, error) {
 	cName := C.CString(dbname)
 	defer C.free(unsafe.Pointer(cName))
 
-	db := C.alpm_register_syncdb(h.ptr, cName, C.alpm_siglevel_t(siglevel))
+	db := C.alpm_register_syncdb(h.ptr, cName, C.int(siglevel))
 	if db == nil {
 		return nil, h.LastError()
 	}
@@ -115,6 +116,11 @@ func (db Db) SetServers(servers []string) {
 		defer C.free(unsafe.Pointer(Csrv))
 		C.alpm_db_add_server(db.ptr, Csrv)
 	}
+}
+
+// SetUsage sets the Usage of the database
+func (db Db) SetUsage(usage Usage) {
+	C.alpm_db_set_usage(db.ptr, C.int(usage))
 }
 
 // PkgByName searches a package in db.
@@ -150,4 +156,16 @@ func (l DbList) PkgCachebyGroup(name string) (PackageList, error) {
 func (db Db) PkgCache() PackageList {
 	pkgcache := (*list)(unsafe.Pointer(C.alpm_db_get_pkgcache(db.ptr)))
 	return PackageList{pkgcache, db.handle}
+}
+
+func (db Db) Search(targets []string) PackageList {
+	var needles *C.alpm_list_t
+
+	for _, str := range targets {
+		needles = C.alpm_list_add(needles, unsafe.Pointer(C.CString(str)))
+	}
+
+	pkglist := (*list)(unsafe.Pointer(C.alpm_db_search(db.ptr, needles)))
+	C.alpm_list_free(needles)
+	return PackageList{pkglist, db.handle}
 }
